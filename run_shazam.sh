@@ -129,6 +129,9 @@ case "$1" in
   "help"|"")
     show_help
     ;;
+  http://*|https://*)
+    run_shazam download "$1"
+    ;;
   *)
     echo "Unknown command: $1"
     show_help

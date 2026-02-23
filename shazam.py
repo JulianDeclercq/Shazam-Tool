@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import asyncio
 import tempfile
@@ -124,9 +125,10 @@ def write_to_file(data: str, filename: str) -> None:
             print(f"Error writing to file {filename}: {e}")
 
 
-def download_soundcloud(url: str, output_path: str = DOWNLOADS_DIR) -> None:
+def download_soundcloud(url: str, output_path: str = DOWNLOADS_DIR) -> str | None:
     """
     Download audio from a SoundCloud URL using yt-dlp.
+    Returns the track title on success, None on failure.
     """
     ensure_directory_exists(output_path)
     logger.debug(f"Attempting to download from SoundCloud: {sanitize_url_for_log(url)}")
@@ -143,7 +145,8 @@ def download_soundcloud(url: str, output_path: str = DOWNLOADS_DIR) -> None:
         }
 
         with YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            info = ydl.extract_info(url, download=True)
+            title = info.get('title', 'Unknown Title')
 
         # Verify downloads landed in expected directory
         real_output = os.path.realpath(output_path)
@@ -153,14 +156,17 @@ def download_soundcloud(url: str, output_path: str = DOWNLOADS_DIR) -> None:
                 logger.error(f"Security: file {f} resolved outside download directory, removing")
                 os.remove(os.path.join(output_path, f))
 
-        logger.info("Successfully downloaded from SoundCloud!")
+        logger.info(f"Successfully downloaded from SoundCloud: {title}!")
+        return title
     except Exception as e:
         logger.error(f"Failed to download from SoundCloud {sanitize_url_for_log(url)}: {e}")
+        return None
 
 
-def download_youtube(url: str, output_path: str = DOWNLOADS_DIR) -> None:
+def download_youtube(url: str, output_path: str = DOWNLOADS_DIR) -> str | None:
     """
     Download the audio track from a YouTube video and convert to mp3 using yt-dlp.
+    Returns the video title on success, None on failure.
     """
     ensure_directory_exists(output_path)
     logger.debug(f"Attempting to download from YouTube: {sanitize_url_for_log(url)}")
@@ -189,12 +195,16 @@ def download_youtube(url: str, output_path: str = DOWNLOADS_DIR) -> None:
                 logger.error(f"Security: file {f} resolved outside download directory, removing")
                 os.remove(os.path.join(output_path, f))
 
+        return title
+
     except Exception as e:
         logger.error(f"Error downloading from YouTube {sanitize_url_for_log(url)}: {e}")
+        return None
 
 
-def download_from_url(url: str) -> None:
-    """Determines if URL is YouTube or SoundCloud and calls appropriate download function."""
+def download_from_url(url: str) -> str | None:
+    """Determines if URL is YouTube or SoundCloud and calls appropriate download function.
+    Returns the video/track title on success, None on failure."""
     logger.info("Starting download...")
     validate_url(url)
     safe_url = sanitize_url_for_log(url)
@@ -203,12 +213,13 @@ def download_from_url(url: str) -> None:
     hostname = parsed.hostname
     if 'soundcloud.com' in hostname:
         logger.info("SoundCloud URL detected")
-        download_soundcloud(url)
+        return download_soundcloud(url)
     elif 'youtube.com' in hostname or hostname == 'youtu.be':
         logger.info("YouTube URL detected")
-        download_youtube(url)
+        return download_youtube(url)
     else:
         logger.error("Unsupported URL format. Please provide a YouTube or SoundCloud link.")
+        return None
 
 
 def segment_audio(audio_file: str, output_directory: str = "tmp", num_threads: int = 4) -> None:
@@ -239,12 +250,11 @@ def segment_audio(audio_file: str, output_directory: str = "tmp", num_threads: i
         logger.error(f"Failed to segment audio file {audio_file}: {e}")
 
 
-async def get_name(file_path: str, max_retries: int = 3) -> str:
+async def get_name(shazam: Shazam, file_path: str, max_retries: int = 3) -> str:
     """
     Uses Shazam to recognize the song with retry logic and error handling.
     Returns either 'Artist - Track Title' or 'Not found' if it fails.
     """
-    shazam = Shazam()
     logger.debug(f"Attempting to recognize: {file_path} (max retries: {max_retries})")
     for attempt in range(max_retries):
         try:
@@ -253,7 +263,7 @@ async def get_name(file_path: str, max_retries: int = 3) -> str:
             if 'track' not in data:
                 logger.debug(f"No track data found in attempt {attempt+1}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(2)
                     continue
                 logger.debug("Recognition failed after all attempts")
                 return "Not found"
@@ -267,10 +277,32 @@ async def get_name(file_path: str, max_retries: int = 3) -> str:
         except Exception as e:
             logger.debug(f"Error in recognition attempt {attempt+1}: {str(e)}")
             if attempt < max_retries - 1:
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
                 continue
             logger.debug("Recognition failed after all attempts due to exception")
             return "Not found"
+
+
+async def _recognize_segments(tmp_dir: str, tmp_files: list, total_segments: int,
+                               output_filename: str, unique_tracks: list, seen_tracks: set) -> None:
+    shazam = Shazam()
+    for idx, file_name in enumerate(tmp_files, start=1):
+        segment_path = os.path.join(tmp_dir, file_name)
+        try:
+            track_name = await get_name(shazam, segment_path)
+            progress_str = f"[{idx}/{total_segments}]: {track_name}"
+            logger.info(progress_str)
+            if track_name != "Not found" and track_name not in seen_tracks:
+                seen_tracks.add(track_name)
+                unique_tracks.append(track_name)
+                write_to_file(track_name, output_filename)
+                logger.debug(f"Added new unique track: {track_name}")
+        except Exception as e:
+            logger.error(f"Error processing segment {file_name}: {e}")
+            continue
+        # Small delay between requests to avoid rate limiting
+        if idx < total_segments:
+            await asyncio.sleep(0.5)
 
 
 def process_audio_file(audio_file: str, output_filename: str, file_index: int, total_files: int) -> None:
@@ -280,7 +312,8 @@ def process_audio_file(audio_file: str, output_filename: str, file_index: int, t
         logger.info(f"\nProcessing file: {audio_file}")
 
     logger.debug(f"Starting processing for {audio_file}")
-    unique_tracks = set()
+    unique_tracks = []
+    seen_tracks = set()
     try:
         with open(output_filename, "a", encoding="utf-8") as f:
             f.write(f"===== {os.path.basename(audio_file)} ======\n")
@@ -298,20 +331,8 @@ def process_audio_file(audio_file: str, output_filename: str, file_index: int, t
         total_segments = len(tmp_files)
         logger.debug(f"Found {total_segments} segments to process")
 
-        for idx, file_name in enumerate(tmp_files, start=1):
-            segment_path = os.path.join(tmp_dir, file_name)
-            try:
-                loop = asyncio.get_event_loop()
-                track_name = loop.run_until_complete(get_name(segment_path))
-                progress_str = f"[{idx}/{total_segments}]: {track_name}"
-                logger.info(progress_str)
-                if track_name != "Not found" and track_name not in unique_tracks:
-                    unique_tracks.add(track_name)
-                    write_to_file(track_name, output_filename)
-                    logger.debug(f"Added new unique track: {track_name}")
-            except Exception as e:
-                logger.error(f"Error processing segment {file_name}: {e}")
-                continue
+        asyncio.run(_recognize_segments(tmp_dir, tmp_files, total_segments,
+                                         output_filename, unique_tracks, seen_tracks))
 
     # Add an empty line after processing each file
     try:
@@ -319,6 +340,12 @@ def process_audio_file(audio_file: str, output_filename: str, file_index: int, t
             f.write("\n")
     except OSError as e:
         logger.error(f"Error writing empty line for {audio_file}: {e}")
+
+    if unique_tracks:
+        logger.info(f"\n--- Tracklist ({len(unique_tracks)} tracks) ---")
+        for i, track in enumerate(unique_tracks, 1):
+            logger.info(f"  {i}. {track}")
+        logger.info("---")
 
     logger.info(f"Successfully processed file: {audio_file}")
     logger.debug(f"Found {len(unique_tracks)} unique tracks in {audio_file}")
@@ -416,6 +443,12 @@ def main() -> None:
             logger.error("Missing URL. Usage: python shazam.py download <url> [--debug]")
             sys.exit(1)
 
+        title = download_from_url(url_or_file)
+        if title:
+            safe_title = re.sub(r'[^\w\s\-\(\)]', '', title).strip()
+            safe_title = re.sub(r'\s+', '_', safe_title)
+            output_filename = os.path.join(output_dir, f"{safe_title}.txt")
+
         try:
             with open(output_filename, "w", encoding="utf-8") as f:
                 f.write("===== Download Results ======\n\n")
@@ -423,8 +456,22 @@ def main() -> None:
             logger.error(f"Error creating output file {output_filename}: {e}")
             sys.exit(1)
 
-        download_from_url(url_or_file)
-        process_downloads()
+        # Process downloaded files
+        ensure_directory_exists(DOWNLOADS_DIR)
+        mp3_files = [f for f in os.listdir(DOWNLOADS_DIR) if f.endswith('.mp3')]
+        if not mp3_files:
+            logger.warning(f"No MP3 files found in '{DOWNLOADS_DIR}' directory.")
+            return
+
+        total_files = len(mp3_files)
+        logger.info(f"Found {total_files} MP3 file(s) to process...")
+
+        for idx, file_name in enumerate(mp3_files, start=1):
+            full_path = os.path.join(DOWNLOADS_DIR, file_name)
+            process_audio_file(full_path, output_filename, idx, total_files)
+
+        logger.info(f"\nAll files successfully processed!")
+        logger.info(f"Results saved to {output_filename}")
 
     elif command in ['scan', 'scan-downloads']:
         logger.info(f"Scanning '{DOWNLOADS_DIR}' directory for MP3 files...")
@@ -446,7 +493,12 @@ def main() -> None:
             except ValueError as e:
                 logger.error(f"Invalid URL: {e}")
                 sys.exit(1)
-            download_from_url(audio_file)
+            title = download_from_url(audio_file)
+            if title:
+                safe_title = re.sub(r'[^\w\s\-\(\)]', '', title).strip()
+                safe_title = re.sub(r'\s+', '_', safe_title)
+                output_filename = os.path.join(output_dir, f"{safe_title}.txt")
+
             mp3_files = [f for f in os.listdir(DOWNLOADS_DIR) if f.endswith('.mp3')]
             if not mp3_files:
                 logger.error(f"No MP3 files found in '{DOWNLOADS_DIR}' directory after download.")
