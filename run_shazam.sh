@@ -9,7 +9,7 @@ BOLD='\033[1m'
 echo -e "${BOLD}🎵 Shazam Tool Setup & Runner${NC}\n"
 
 # Ensure directories exist
-mkdir -p downloads tmp recognised-lists logs
+mkdir -p downloads recognised-lists logs
 
 # Function to check if command exists
 command_exists() {
@@ -40,8 +40,14 @@ setup_environment() {
   if ! command_exists ffmpeg; then
     echo "ffmpeg is required but not installed."
     if [[ "$OSTYPE" == "darwin"* ]]; then
-      echo "Installing ffmpeg using Homebrew..."
-      brew install ffmpeg
+      read -p "ffmpeg is required. Install via Homebrew? [y/N] " -n 1 -r
+      echo
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        brew install ffmpeg
+      else
+        echo "ffmpeg is required. Please install it manually."
+        exit 1
+      fi
     elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
       echo "Please install ffmpeg using: sudo apt install ffmpeg"
       exit 1
@@ -63,7 +69,8 @@ setup_environment() {
   
   # Install dependencies
   echo "Installing dependencies..."
-  
+  pip install -r requirements.txt
+
   echo -e "${GREEN}Environment setup complete!${NC}\n"
 }
 
@@ -94,9 +101,6 @@ show_help() {
   echo "  help        - Show this help information"
   echo ""
 }
-
-# Make the script executable
-chmod +x "$0"
 
 # Main command handler
 case "$1" in
