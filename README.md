@@ -11,31 +11,34 @@
 
 ## 🛠️ Requirements
 
-This project uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) for downloading audio from SoundCloud and YouTube.
+- **Python 3.11+**
+- **ffmpeg** (for audio processing)
+- Python dependencies listed in `requirements.txt`
 
-### Linux
+### Quick Start
+
+The easiest way to get everything set up is with the provided shell script:
+
+```sh
+./run_shazam.sh setup
+```
+
+This creates a virtual environment, installs ffmpeg (if needed on macOS), and installs all Python dependencies automatically.
+
+### Manual Setup
+
+#### Linux
 
 ```sh
 sudo apt install ffmpeg
-pip install ShazamApi pydub yt-dlp shazamio
+pip install -r requirements.txt
 ```
 
-### macOS
+#### macOS
 
 ```sh
-# Install Homebrew if not already installed
-# See https://brew.sh for installation instructions
-
 brew install ffmpeg
-
-# Optional: Create and activate virtual environment
-# python3.11 -m venv venv && source venv/bin/activate
-
-# If you don't have Python 3.11:
-# brew install python@3.11
-
-# Install required packages
-pip install shazamio pydub yt-dlp ShazamApi
+pip install -r requirements.txt
 ```
 
 ## 📚 Usage
@@ -59,6 +62,9 @@ chmod +x run_shazam.sh
 
 # Process a specific audio file
 ./run_shazam.sh recognize <file>
+
+# Enable debug logging for any command
+./run_shazam.sh download <url> --debug
 
 # Show help information
 ./run_shazam.sh help
@@ -84,13 +90,28 @@ python shazam.py scan
 
 Processes all MP3 files in the Downloads directory.
 
-#### 3. Recognize Single File
+#### 3. Recognize Single File or URL
 
 ```sh
-python shazam.py recognize <file>
+# Recognize a local file
+python shazam.py recognize path/to/audio.mp3
+
+# Recognize from a URL
+python shazam.py recognize https://www.youtube.com/watch?v=...
 ```
 
-Processes a single audio file for song recognition.
+Processes a single audio file (or downloads from a URL first) for song recognition.
+
+#### Debug Mode
+
+Add `--debug` to any command for detailed logging:
+
+```sh
+python shazam.py scan --debug
+python shazam.py download <url> --debug
+```
+
+> ℹ️ Only YouTube and SoundCloud URLs are supported.
 
 ## 📋 Output
 
